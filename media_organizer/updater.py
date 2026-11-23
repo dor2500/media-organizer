@@ -115,7 +115,10 @@ def download_and_apply(info: ReleaseInfo, progress_cb=None) -> str:
             "  timeout /t 1 /nobreak >NUL\r\n"
             "  goto waitloop\r\n"
             ")\r\n"
-            f"copy /Y \"{dest}\" \"{current_exe}\"\r\n"
+            "timeout /t 2 /nobreak >NUL\r\n"
+            f"copy /Y \"{dest}\" \"{current_exe}\" >NUL\r\n"
+            "set _MEIPASS=\r\n"
+            "set _MEIPASS2=\r\n"
             f"start \"\" \"{current_exe}\"\r\n"
             "del \"%~f0\"\r\n",
             encoding="utf-8",
