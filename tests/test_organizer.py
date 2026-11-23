@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from media_organizer.core import (DONE, DUPLICATE, OUT_OF_RANGE, Options, build_plan, execute,
-                                  latest_undo, undo, write_reports)
+from media_organizer.core import (DONE, DUPLICATE, NO_FACE_MATCH, OUT_OF_RANGE, Options,
+                                  build_plan, execute, latest_undo, undo, write_reports)
 from media_organizer.dates import (SRC_FILENAME, SRC_FILESYSTEM, SRC_METADATA, filename_date,
                                    mp4_date, resolve_date)
 
@@ -175,3 +175,39 @@ def test_output_inside_source_not_rescanned(heb):
     execute(plan)
     plan2 = build_plan(Options(source=heb, output=out))
     assert len(plan2.items) == 1  # organized/ copy is not picked up as input
+
+
+def test_multiple_sources(tmp_path):
+    d1, d2, out = tmp_path / "תיקייה 1", tmp_path / "תיקייה 2", tmp_path / "פלט"
+    d1.mkdir()
+    d2.mkdir()
+    make_jpeg(d1 / "a.jpg", "2020:01:02 10:00:00", color=(10, 20, 30))
+    make_jpeg(d2 / "b.jpg", "2020:01:02 11:00:00", color=(40, 50, 60))
+    plan = build_plan(Options(sources=[d1, d2, d1], output=out))  # d1 repeated -> deduplicated
+    assert sorted(it.dest.name for it in plan.items) == ["02.01-2.jpg", "02.01.jpg"]
+
+
+def test_face_filter_no_face_in_ref_raises(heb, tmp_path):
+    blank = make_jpeg(heb / "blank.jpg", "2020:01:02 10:00:00")
+    with pytest.raises(ValueError, match="No face detected"):
+        build_plan(Options(sources=[heb], output=tmp_path / "out", person_image=blank))
+
+
+def test_face_filter_with_mock_matcher(heb, tmp_path, monkeypatch):
+    import media_organizer.faces as faces_mod
+
+    class FakeMatcher:
+        def __init__(self, ref_image, threshold=0.363):
+            pass
+
+        def match_file(self, path: Path):
+            return ("match" in path.name), (0.65 if "match" in path.name else 0.12)
+
+    monkeypatch.setattr(faces_mod, "FaceMatcher", FakeMatcher)
+    ref = make_jpeg(tmp_path / "ref.jpg")
+    make_jpeg(heb / "match_1.jpg", "2021:05:01 10:00:00", color=(10, 10, 10))
+    make_jpeg(heb / "other_1.jpg", "2021:05:01 11:00:00", color=(20, 20, 20))
+    plan = build_plan(Options(sources=[heb], output=tmp_path / "out", person_image=ref))
+    st = {it.src.name: it.status for it in plan.items}
+    assert st == {"match_1.jpg": "planned", "other_1.jpg": NO_FACE_MATCH}
+

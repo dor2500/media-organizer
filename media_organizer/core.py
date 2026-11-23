@@ -32,6 +32,7 @@ PLANNED = "planned"
 DONE = "done"
 DUPLICATE = "duplicate"
 OUT_OF_RANGE = "out-of-range"
+NO_FACE_MATCH = "no-face"
 SKIPPED = "skipped"
 ERROR = "error"
 
@@ -66,8 +67,9 @@ class PlanItem:
 
 @dataclass
 class Options:
-    source: Path
     output: Path
+    source: Path | None = None
+    sources: list[Path] = field(default_factory=list)
     mode: str = "copy"                 # copy | move
     recursive: bool = True
     year_from: int | None = None
@@ -75,6 +77,19 @@ class Options:
     duplicates: str = "skip"           # skip | keep
     use_filename_dates: bool = True
     verify: bool = True                # re-hash after copy
+    person_image: Path | None = None   # optional reference photo to filter by face
+    face_threshold: float = 0.363
+
+    def __post_init__(self):
+        self.output = Path(self.output)
+        if self.sources:
+            self.sources = [Path(s) for s in self.sources]
+        elif self.source is not None:
+            self.sources = [Path(self.source)]
+        if self.sources and self.source is None:
+            self.source = self.sources[0]
+        if self.person_image is not None:
+            self.person_image = Path(self.person_image)
 
 
 @dataclass
@@ -112,29 +127,43 @@ def _natural(s: str) -> tuple:
 
 
 def scan(opts: Options) -> tuple[list[Path], list[Path]]:
-    src = Path(opts.source)
     out = Path(opts.output)
     media, ignored = [], []
-    skip_out = out.exists() and _is_within(out, src) and out.resolve() != src.resolve()
-    walker = os.walk(src) if opts.recursive else [(str(src), [], os.listdir(src))]
-    for root, dirs, files in walker:
-        rp = Path(root)
-        # never descend into our own log folder or into the output folder
-        dirs[:] = sorted(
-            d for d in dirs
-            if d != LOG_DIR_NAME and not (skip_out and (rp / d).resolve() == out.resolve())
-        )
-        for name in sorted(files):
-            p = rp / name
-            if not p.is_file():
-                continue
-            (media if p.suffix.lower() in MEDIA_EXTS else ignored).append(p)
+    seen: set[Path] = set()
+    for src in opts.sources:
+        src = Path(src)
+        skip_out = out.exists() and _is_within(out, src) and out.resolve() != src.resolve()
+        walker = os.walk(src) if opts.recursive else [(str(src), [], os.listdir(src))]
+        for root, dirs, files in walker:
+            rp = Path(root)
+            # never descend into our own log folder or into the output folder
+            dirs[:] = sorted(
+                d for d in dirs
+                if d != LOG_DIR_NAME and not (skip_out and (rp / d).resolve() == out.resolve())
+            )
+            for name in sorted(files):
+                p = rp / name
+                if not p.is_file():
+                    continue
+                rp_file = p.resolve()
+                if rp_file in seen:
+                    continue
+                seen.add(rp_file)
+                (media if p.suffix.lower() in MEDIA_EXTS else ignored).append(p)
     return media, ignored
 
 
 # ----------------------------------------------------------------------- planning
 def build_plan(opts: Options, progress: ProgressCB | None = None,
                cancel: threading.Event | None = None) -> Plan:
+    matcher = None
+    if opts.person_image:
+        from .faces import FaceMatcher
+
+        if progress:
+            progress(0, 1, f"Loading face model & reference: {opts.person_image.name}")
+        matcher = FaceMatcher(opts.person_image, threshold=opts.face_threshold)
+
     media, ignored = scan(opts)
     plan = Plan(opts, ignored=ignored)
     total = len(media)
@@ -152,11 +181,12 @@ def build_plan(opts: Options, progress: ProgressCB | None = None,
         if progress:
             progress(i, total, f"Reading dates: {p.name}")
 
-    _assign(plan, progress)
+    _assign(plan, progress, matcher=matcher, cancel=cancel)
     return plan
 
 
-def _assign(plan: Plan, progress: ProgressCB | None) -> None:
+def _assign(plan: Plan, progress: ProgressCB | None, matcher=None,
+            cancel: threading.Event | None = None) -> None:
     opts = plan.options
     out = Path(opts.output)
     candidates = [it for it in plan.items if it.status == PLANNED]
@@ -165,6 +195,24 @@ def _assign(plan: Plan, progress: ProgressCB | None) -> None:
         y = it.date.dt.year
         if (opts.year_from and y < opts.year_from) or (opts.year_to and y > opts.year_to):
             it.status, it.note = OUT_OF_RANGE, f"year {y} outside range"
+
+    if matcher is not None:
+        in_range = [it for it in candidates if it.status == PLANNED]
+        for i, it in enumerate(in_range, 1):
+            if cancel and cancel.is_set():
+                break
+            if progress:
+                progress(i, len(in_range), f"Searching face: {it.src.name}")
+            try:
+                matched, score = matcher.match_file(it.src)
+            except Exception as e:
+                it.status, it.note = ERROR, f"face scan error: {e}"
+                continue
+            if matched:
+                it.note = f"face match ({score:.2f})"
+            else:
+                it.status = NO_FACE_MATCH
+                it.note = f"no face match (best {score:.2f})" if score is not None else "no face detected"
 
     active = [it for it in candidates if it.status == PLANNED]
     active.sort(key=lambda it: (it.date.dt, _natural(it.src.stem), it.src.suffix.casefold(),
@@ -353,8 +401,14 @@ def write_reports(plan: Plan, manifest: list[dict] | None, executed: bool) -> Pa
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         w.writerows(rows)
-    opts = asdict(plan.options)
-    opts = {k: str(v) if isinstance(v, Path) else v for k, v in opts.items()}
+    def _ser(v):
+        if isinstance(v, Path):
+            return str(v)
+        if isinstance(v, list):
+            return [_ser(x) for x in v]
+        return v
+
+    opts = {k: _ser(v) for k, v in asdict(plan.options).items()}
     (logdir / f"{kind}-{stamp}.txt").write_text(
         f"Media Organizer {kind} {stamp}\n{json.dumps(opts, ensure_ascii=False, indent=2)}\n\n"
         + summary_text(plan) + "\n", encoding="utf-8")

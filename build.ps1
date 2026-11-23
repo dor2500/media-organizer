@@ -10,6 +10,7 @@ if (-not (Test-Path $py)) {
 }
 & $py tools\make_icon.py
 $common = @("--noconfirm", "--clean", "--onefile", "--icon", "assets\icon.ico",
+            "--add-data", "assets;assets",
             "--collect-data", "customtkinter", "--collect-all", "pillow_heif")
 & $py -m PyInstaller @common --windowed --name MediaOrganizer run_gui.py
 & $py -m PyInstaller @common --console  --name MediaOrganizer-cli run_cli.py

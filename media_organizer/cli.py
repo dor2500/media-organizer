@@ -33,8 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="MediaOrganizer-cli",
         description=f"{APP_NAME} {__version__}: sort photos/videos into <out>/YYYY/MM/DD.MM.ext",
     )
-    p.add_argument("source", nargs="?", help="folder containing photos/videos")
-    p.add_argument("output", nargs="?", help="destination root folder")
+    p.add_argument("paths", nargs="*", help="source folder(s) followed by destination root folder")
+    p.add_argument("--out", "-o", help="destination root folder (if omitted, last path is used)")
+    p.add_argument("--person", metavar="IMAGE",
+                   help="reference photo of a person: only include photos/videos with their face")
+    p.add_argument("--face-threshold", type=float, default=0.363,
+                   help="face match cosine threshold (default 0.363; higher = stricter)")
     p.add_argument("--run", action="store_true",
                    help="actually copy/move files (default is a dry-run preview)")
     p.add_argument("--move", action="store_true", help="move instead of copy")
@@ -65,22 +69,41 @@ def main(argv=None) -> int:
         print(undo(m, _bar))
         return 0
 
-    if not args.source or not args.output:
+    if args.out:
+        raw_sources, raw_out = args.paths, args.out
+    elif len(args.paths) >= 2:
+        raw_sources, raw_out = args.paths[:-1], args.paths[-1]
+    else:
         build_parser().print_help()
         return 2
-    src, out = Path(args.source), Path(args.output)
-    if not src.is_dir():
-        print(f"Source folder not found: {src}")
+
+    if not raw_sources:
+        build_parser().print_help()
+        return 2
+
+    sources = [Path(s) for s in raw_sources]
+    out = Path(raw_out)
+    for src in sources:
+        if not src.is_dir():
+            print(f"Source folder not found: {src}")
+            return 2
+
+    person = Path(args.person) if args.person else None
+    if person and not person.is_file():
+        print(f"Reference person image not found: {person}")
         return 2
 
     opts = Options(
-        source=src, output=out, mode="move" if args.move else "copy",
+        sources=sources, output=out, mode="move" if args.move else "copy",
         recursive=not args.no_recursive, year_from=args.year_from, year_to=args.year_to,
         duplicates="keep" if args.keep_duplicates else "skip",
         use_filename_dates=not args.no_filename_dates, verify=not args.no_verify,
+        person_image=person, face_threshold=args.face_threshold,
     )
-    print(f"{APP_NAME} {__version__}\nSource : {src}\nOutput : {out}\nMode   : "
-          f"{opts.mode}{'' if args.run else ' (DRY RUN - nothing will be changed)'}\n")
+    print(f"{APP_NAME} {__version__}\nSources: {', '.join(str(s) for s in sources)}\n"
+          f"Output : {out}\n"
+          + (f"Person : {person} (threshold={args.face_threshold})\n" if person else "")
+          + f"Mode   : {opts.mode}{'' if args.run else ' (DRY RUN - nothing will be changed)'}\n")
     plan = build_plan(opts, _bar)
     manifest = None
     if args.run:
