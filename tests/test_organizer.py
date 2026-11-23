@@ -242,3 +242,21 @@ def test_updater_version_comparison_and_mock(monkeypatch):
     assert info.asset_name is not None
 
 
+
+
+# ---------------------------------------------------------------- RTL display helper
+def test_rtl_moves_edge_punctuation_and_keeps_latin_runs():
+    from media_organizer.bidi import LRM, rtl
+    assert rtl("Hello") == "Hello"                       # no Hebrew -> untouched
+    assert rtl("שלום עולם") == "שלום עולם"               # pure Hebrew -> untouched
+    assert rtl("בחר יעד…") == "…בחר יעד"                 # trailing ellipsis goes to the left
+    assert rtl("(אחת שתיים)") == "(אחת שתיים)"            # edge brackets reversed + mirrored
+    assert rtl("שגיאה: D:/x") == f"{LRM}D:/x{LRM} :שגיאה"  # path ends up on the left
+    assert rtl("אחת 2023 שתיים") == f"שתיים {LRM}2023{LRM} אחת"
+    assert rtl("א.\nב.") == ".א\n.ב"                     # line by line
+
+
+def test_wrap_breaks_in_logical_order():
+    from media_organizer.bidi import wrap
+    assert wrap("אחת שתיים שלוש", len, 9) == "אחת שתיים\nשלוש"
+    assert wrap("  א ב ג", len, 5) == "  א ב\n  ג"
