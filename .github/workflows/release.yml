@@ -86,8 +86,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" artifacts/*/* --clobber
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/*/* --repo "$REPO" --clobber
           else
-            gh release create "$TAG" artifacts/*/* --title "Media Organizer $TAG" --generate-notes
+            gh release create "$TAG" artifacts/*/* --repo "$REPO" --title "Media Organizer $TAG" --generate-notes
           fi
