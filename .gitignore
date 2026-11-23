@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+*.spec
+build.log
+.pytest_cache/
+dist/*
+!dist/MediaOrganizer.exe
+!dist/MediaOrganizer-cli.exe
