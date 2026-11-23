@@ -46,11 +46,11 @@ Or download binaries directly from [GitHub Releases](../../releases/latest):
 ## 🚀 Usage
 
 ### GUI
-1. **Paste** one or more source folder paths (or click **➕ הוסף תיקייה**).
+1. **Paste** one or more source folder paths (or click **הוסף תיקייה**).
 2. **Choose or paste the destination folder** where everything will be saved.
-3. *(Optional)* **Upload a person's photo** (**🖼️ העלה תמונת אדם…**) to search and organize only photos/videos containing their face.
-4. Click **✨ סדר הכל**.
-5. Use **🔄 בדוק עדכונים** anytime to check for and install new releases.
+3. *(Optional)* **Pick a person's photo** (**בחר תמונה**) to organize only photos/videos containing their face. Each match is copied to the destination **as soon as it is found**; pressing **עצור** keeps what was already copied (and it can still be undone).
+4. Click **תצוגה מקדימה** to see what will happen, then **סדר הכל**.
+5. Use **בדוק עדכונים** anytime to check for and install new releases.
 
 ### CLI
 ```powershell
