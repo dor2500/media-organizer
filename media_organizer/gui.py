@@ -17,7 +17,7 @@ from PIL import Image, ImageOps
 from . import APP_NAME, __version__
 from .bidi import rtl, wrap
 from .core import (DONE, DUPLICATE, ERROR, NO_FACE_MATCH, OUT_OF_RANGE, PLANNED, SKIPPED,
-                   Options, Plan, build_plan, execute, latest_undo, summarize, summary_text,
+                   Options, Plan, build_plan, execute, latest_undo, organize_live, summarize, summary_text,
                    undo, write_reports)
 from .dates import SRC_FILENAME, SRC_FILESYSTEM, SRC_METADATA
 from .updater import check_for_updates, download_and_apply
@@ -554,6 +554,8 @@ class App(ctk.CTk):
                         self._status(f"{msg}   ({i}/{n})")
                     else:
                         self._status(msg)
+                elif ev[0] == "row":       # live face mode: a match was just copied
+                    self._add_row(ev[1], ev[2], index=0)
                 elif ev[0] == "done":
                     ev[1]()
         except queue.Empty:
@@ -580,20 +582,24 @@ class App(ctk.CTk):
             return (0 if x.dest else 1, str(x.dest.parent) if x.dest else "",
                     x.date.dt if x.date else 0, x.suffix, x.src.name)
         for it in sorted(plan.items, key=order):
-            dest = str(it.dest.relative_to(out)) if it.dest else (it.note or "-")
-            src_col = it.date.label() if it.date else it.note
-            if it.note and "face match" in it.note:
-                src_col = f"{src_col} • {it.note}"
-            self.tree.insert("", "end", tags=(it.status,), values=(
-                STATUS_HE.get(it.status, it.status), it.src.name,
-                it.date.dt.strftime("%Y-%m-%d %H:%M") if it.date else "",
-                rtl(src_col or ""), dest))
+            self._add_row(it, out)
         for p in plan.ignored:
             self.tree.insert("", "end", tags=(SKIPPED,),
                              values=(STATUS_HE[SKIPPED], p.name, "", rtl("לא קובץ תמונה/וידאו"), "-"))
         if self.tree.get_children():
             self.empty_lbl.place_forget()
         self._set_summary(hebrew_summary(plan, executed) + (f"\n\n{extra}" if extra else ""))
+
+    def _add_row(self, it, out: Path, index="end"):
+        dest = str(it.dest.relative_to(out)) if it.dest else (it.note or "-")
+        src_col = it.date.label() if it.date else it.note
+        if it.note and "face match" in it.note:
+            src_col = f"{src_col} • {it.note}"
+        self.tree.insert("", index, tags=(it.status,), values=(
+            STATUS_HE.get(it.status, it.status), it.src.name,
+            it.date.dt.strftime("%Y-%m-%d %H:%M") if it.date else "",
+            rtl(src_col or ""), dest))
+        self.empty_lbl.place_forget()
 
     # ------------------------------------------------------------------ actions
     def on_organize_all(self):
@@ -606,6 +612,13 @@ class App(ctk.CTk):
                 return
 
         def work():
+            if opts.person_image:
+                # Face search: each match is copied the moment it is found, and shows up
+                # at the top of the table. Stop keeps (and logs, for undo) what was done.
+                plan, manifest = organize_live(
+                    opts, self._progress, self.cancel,
+                    on_item=lambda it: self.q.put(("row", it, opts.output)))
+                return plan, write_reports(plan, manifest, executed=True) if manifest else None
             plan = build_plan(opts, self._progress, self.cancel)
             if self.cancel.is_set():
                 return plan, None
@@ -627,6 +640,11 @@ class App(ctk.CTk):
                     APP_NAME, f"הסתיים! ✅\n\n{done} קבצים סודרו.\n\nלפתוח את התיקייה המסודרת?"):
                 self.on_open()
 
+        if opts.person_image:
+            self.tree.delete(*self.tree.get_children())
+            self._set_summary("חיפוש פנים פעיל:
+כל תמונה שמזוהה מועתקת מיד לתיקיית היעד ומופיעה בראש הטבלה.
+אפשר לעצור בכל רגע — מה שכבר הועתק נשמר.")
         self._status("סורק ומסדר…")
         self._thread(work, finish)
 

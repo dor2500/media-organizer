@@ -260,3 +260,45 @@ def test_wrap_breaks_in_logical_order():
     from media_organizer.bidi import wrap
     assert wrap("אחת שתיים שלוש", len, 9) == "אחת שתיים\nשלוש"
     assert wrap("  א ב ג", len, 5) == "  א ב\n  ג"
+
+
+def test_live_face_mode_copies_each_match_immediately(heb, tmp_path, monkeypatch):
+    import threading
+    import media_organizer.faces as faces_mod
+    from media_organizer.core import organize_live, undo, write_reports
+
+    class FakeMatcher:
+        def __init__(self, ref_image, threshold=0.363):
+            pass
+
+        def match_file(self, path: Path):
+            return ("match" in path.name), 0.7
+
+    monkeypatch.setattr(faces_mod, "FaceMatcher", FakeMatcher)
+    ref = make_jpeg(tmp_path / "ref.jpg")
+    make_jpeg(heb / "a_match.jpg", "2021:05:01 10:00:00", color=(10, 10, 10))
+    make_jpeg(heb / "b_other.jpg", "2021:05:01 11:00:00", color=(20, 20, 20))
+    (heb / "c_match_copy.jpg").write_bytes((heb / "a_match.jpg").read_bytes())   # identical bytes
+    make_jpeg(heb / "d_match.jpg", "2021:05:01 12:00:00", color=(30, 30, 30))
+    make_jpeg(heb / "e_match.jpg", "2022:01:01 09:00:00", color=(40, 40, 40))
+    out = tmp_path / "out"
+    cancel = threading.Event()
+    seen = []
+
+    def on_item(it):
+        # the file must already be in the destination when the GUI is told about it
+        seen.append((it.src.name, it.status, it.dest.exists() if it.dest else None))
+        if it.src.name == "d_match.jpg":
+            cancel.set()                      # user presses Stop after the 3rd hit
+
+    opts = Options(sources=[heb], output=out, person_image=ref)
+    plan, manifest = organize_live(opts, cancel=cancel, on_item=on_item)
+    assert seen == [("a_match.jpg", DONE, True),
+                    ("c_match_copy.jpg", DUPLICATE, None),
+                    ("d_match.jpg", DONE, True)]
+    assert sorted(p.name for p in (out / "2021" / "05").iterdir()) == ["01.05-2.jpg", "01.05.jpg"]
+    assert not (out / "2022").exists()        # never reached after Stop
+    assert len(manifest) == 2
+    write_reports(plan, manifest, executed=True)
+    from media_organizer.core import latest_undo
+    assert undo(latest_undo(out))["reverted"] == 2

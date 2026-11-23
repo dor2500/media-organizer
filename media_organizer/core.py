@@ -253,36 +253,46 @@ def _assign(plan: Plan, progress: ProgressCB | None, matcher=None,
                 else:
                     first_by_hash[digest] = it
 
-    # --- name assignment per target folder
-    reserved: dict[Path, set[str]] = {}
-    existing_by_size: dict[Path, dict[int, list[Path]]] = {}
-
-    def folder_state(folder: Path):
-        if folder not in reserved:
-            stems, sizes = set(), defaultdict(list)
-            if folder.is_dir():
-                for e in folder.iterdir():
-                    if e.is_file():
-                        stems.add(e.stem.casefold())
-                        sizes[e.stat().st_size].append(e)
-            reserved[folder] = stems
-            existing_by_size[folder] = sizes
-        return reserved[folder], existing_by_size[folder]
-
+    namer = _Namer(out, opts.duplicates == "skip", h)
     n = len(active)
     for i, it in enumerate(active, 1):
         if progress:
             progress(i, n, f"Planning: {it.src.name}")
         if it.status != PLANNED:
             continue
+        namer.assign(it)
+
+
+class _Namer:
+    """Assigns YYYY/MM/DD.MM[-k].ext names, reserving stems already in the output and
+    flagging inputs that are byte-identical to a file already there."""
+
+    def __init__(self, out: Path, skip_dups: bool, hasher: Callable[[Path], str]):
+        self.out, self.skip_dups, self.h = out, skip_dups, hasher
+        self.reserved: dict[Path, set[str]] = {}
+        self.existing_by_size: dict[Path, dict[int, list[Path]]] = {}
+
+    def _folder_state(self, folder: Path):
+        if folder not in self.reserved:
+            stems, sizes = set(), defaultdict(list)
+            if folder.is_dir():
+                for e in folder.iterdir():
+                    if e.is_file():
+                        stems.add(e.stem.casefold())
+                        sizes[e.stat().st_size].append(e)
+            self.reserved[folder] = stems
+            self.existing_by_size[folder] = sizes
+        return self.reserved[folder], self.existing_by_size[folder]
+
+    def assign(self, it: PlanItem) -> None:
         dt = it.date.dt
-        folder = out / f"{dt.year:04d}" / f"{dt.month:02d}"
-        stems, sizes = folder_state(folder)
+        folder = self.out / f"{dt.year:04d}" / f"{dt.month:02d}"
+        stems, sizes = self._folder_state(folder)
 
         # already present in output (e.g. re-run)? -> duplicate, never re-copied
-        if opts.duplicates == "skip" and it.size in sizes:
+        if self.skip_dups and it.size in sizes:
             try:
-                digest = h(it.src)
+                digest = self.h(it.src)
                 match = next((e for e in sizes[it.size] if sha256(e) == digest), None)
             except OSError:
                 match = None
@@ -290,7 +300,7 @@ def _assign(plan: Plan, progress: ProgressCB | None, matcher=None,
                 it.status = DUPLICATE
                 it.duplicate_of = str(match)
                 it.note = "identical file already exists in output"
-                continue
+                return
 
         base = f"{dt.day:02d}.{dt.month:02d}"
         ext = it.src.suffix.lower()
@@ -303,6 +313,120 @@ def _assign(plan: Plan, progress: ProgressCB | None, matcher=None,
         stems.add(stem.casefold())
         it.suffix = k
         it.dest = folder / f"{stem}{ext}"
+
+    def record(self, dest: Path, size: int) -> None:
+        """A file was just written: later inputs identical to it count as duplicates."""
+        self._folder_state(dest.parent)[1][size].append(dest)
+
+
+# ----------------------------------------------------------------------- live (face) mode
+def organize_live(opts: Options, progress: ProgressCB | None = None,
+                  cancel: threading.Event | None = None,
+                  on_item: Callable[[PlanItem], None] | None = None) -> tuple[Plan, list[dict]]:
+    """Face search that copies/moves each match *as soon as it is found*.
+
+    Unlike build_plan()+execute(), nothing waits for the whole library to be
+    searched: a cancelled or interrupted run keeps everything found so far, and
+    the undo manifest covers exactly those files.  Names are assigned in scan
+    order (a later, earlier-dated photo of the same day gets the next -k suffix).
+    """
+    from .faces import FaceMatcher
+
+    if progress:
+        progress(0, 0, f"טוען מודל זיהוי פנים ותמונת ייחוס: {opts.person_image.name}")
+    matcher = FaceMatcher(opts.person_image, threshold=opts.face_threshold)
+
+    media, ignored = scan(opts, progress=progress, cancel=cancel)
+    plan = Plan(opts, ignored=ignored)
+    manifest: list[dict] = []
+    namer = _Namer(Path(opts.output), opts.duplicates == "skip", sha256)
+    copied_by_size: dict[int, list[tuple[str, Path]]] = defaultdict(list)   # inputs already written
+    found = 0
+    total = len(media)
+
+    for i, p in enumerate(media, 1):
+        if cancel and cancel.is_set():
+            break
+        it = PlanItem(src=p)
+        plan.items.append(it)
+        if progress:
+            progress(i, total, f"מחפש פנים ({found} נמצאו): {p.name}")
+        try:
+            it.size = p.stat().st_size
+            it.date = resolve_date(p, use_filename=opts.use_filename_dates)
+        except Exception as e:
+            it.status, it.note = ERROR, f"cannot read: {e}"
+            continue
+        y = it.date.dt.year
+        if (opts.year_from and y < opts.year_from) or (opts.year_to and y > opts.year_to):
+            it.status, it.note = OUT_OF_RANGE, f"year {y} outside range"
+            continue
+        try:
+            matched, score = matcher.match_file(p)
+        except Exception as e:
+            it.status, it.note = ERROR, f"face scan error: {e}"
+            continue
+        if not matched:
+            it.status = NO_FACE_MATCH
+            it.note = f"no face match (best {score:.2f})" if score is not None else "no face detected"
+            continue
+
+        it.note = f"face match ({score:.2f})"
+        digest = None
+        if opts.duplicates == "skip" and it.size in copied_by_size:
+            try:
+                digest = sha256(p)
+            except OSError as e:
+                it.status, it.note = ERROR, f"cannot hash: {e}"
+                continue
+            prev = next((src for d, src in copied_by_size[it.size] if d == digest), None)
+            if prev:
+                it.status, it.duplicate_of = DUPLICATE, str(prev)
+                it.note = "identical content to another input file"
+                if on_item:
+                    on_item(it)
+                continue
+        namer.assign(it)
+        if it.status == PLANNED:
+            op = _transfer(it, opts)
+            if op:
+                manifest.append(op)
+                found += 1
+                namer.record(it.dest, it.size)
+                copied_by_size[it.size].append((op["sha256"] or digest or sha256(it.dest), p))
+        if on_item:
+            on_item(it)
+
+    # files never reached because of cancel stay out of the plan/report
+    return plan, manifest
+
+
+# ----------------------------------------------------------------------- execution
+def _transfer(it: PlanItem, opts: Options) -> dict | None:
+    """Copy or move one planned item to it.dest. Returns its manifest entry or None on error."""
+    try:
+        it.dest.parent.mkdir(parents=True, exist_ok=True)
+        target = _safe_target(it.dest)
+        if target != it.dest:
+            it.note = f"target appeared during run, used {target.name}"
+            it.dest = target
+        src_hash = sha256(it.src) if opts.verify else None
+        same_drive = os.path.splitdrive(str(it.src.resolve()))[0].lower() == \
+            os.path.splitdrive(str(target.resolve()))[0].lower()
+        if opts.mode == "move" and same_drive:
+            os.rename(it.src, target)
+        else:
+            shutil.copy2(it.src, target)
+            if src_hash and sha256(target) != src_hash:
+                target.unlink(missing_ok=True)
+                raise IOError("verification failed (hash mismatch)")
+            if opts.mode == "move":
+                it.src.unlink()
+        it.status = DONE
+        return {"mode": opts.mode, "src": str(it.src), "dest": str(target), "sha256": src_hash}
+    except Exception as e:
+        it.status, it.note = ERROR, str(e)
+        return None
 
 
 # ----------------------------------------------------------------------- execution
@@ -330,29 +454,9 @@ def execute(plan: Plan, progress: ProgressCB | None = None,
             continue
         if progress:
             progress(i, len(todo), f"{opts.mode.title()}: {it.src.name}")
-        try:
-            it.dest.parent.mkdir(parents=True, exist_ok=True)
-            target = _safe_target(it.dest)
-            if target != it.dest:
-                it.note = f"target appeared during run, used {target.name}"
-                it.dest = target
-            src_hash = sha256(it.src) if opts.verify else None
-            same_drive = os.path.splitdrive(str(it.src.resolve()))[0].lower() == \
-                os.path.splitdrive(str(target.resolve()))[0].lower()
-            if opts.mode == "move" and same_drive:
-                os.rename(it.src, target)
-            else:
-                shutil.copy2(it.src, target)
-                if src_hash and sha256(target) != src_hash:
-                    target.unlink(missing_ok=True)
-                    raise IOError("verification failed (hash mismatch)")
-                if opts.mode == "move":
-                    it.src.unlink()
-            it.status = DONE
-            manifest.append({"mode": opts.mode, "src": str(it.src), "dest": str(target),
-                             "sha256": src_hash})
-        except Exception as e:
-            it.status, it.note = ERROR, str(e)
+        op = _transfer(it, opts)
+        if op:
+            manifest.append(op)
     return manifest
 
 
