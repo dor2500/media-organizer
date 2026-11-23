@@ -141,10 +141,11 @@ def scan(opts: Options, progress: ProgressCB | None = None,
             rp = Path(root)
             if progress:
                 progress(0, 0, f"סורק: {rp.name or rp}  (נמצאו {len(media)} קבצי מדיה)")
-            # never descend into our own log folder or into the output folder
+            # never descend into our own log folder, NAS recycle bins, or the output folder
             dirs[:] = sorted(
                 d for d in dirs
-                if d != LOG_DIR_NAME and not (skip_out and (rp / d).resolve() == out.resolve())
+                if d not in (LOG_DIR_NAME, ".recycle", "$RECYCLE.BIN", "@eaDir", "System Volume Information")
+                and not (skip_out and (rp / d).resolve() == out.resolve())
             )
             for name in sorted(files):
                 p = rp / name

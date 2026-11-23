@@ -459,7 +459,7 @@ class App(ctk.CTk):
     def _set_busy(self, busy: bool):
         self.busy = busy
         st = "disabled" if busy else "normal"
-        self.btn_all.configure(state=st)
+        self.btn_all.configure(state=st, fg_color="#234d37" if busy else GREEN)
         self.btn_preview.configure(state=st)
         self.btn_cancel.configure(state="normal" if busy else "disabled")
 
@@ -586,6 +586,7 @@ class App(ctk.CTk):
         self.status.configure(text="בודק עדכונים מול GitHub Releases…")
 
         def finish(info, err):
+            self._set_busy(False)
             self.btn_update.configure(state="normal", text="🔄  בדוק עדכונים")
             if err:
                 self.status.configure(text="בדיקת עדכונים נכשלה.")
