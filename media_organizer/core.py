@@ -350,7 +350,7 @@ def organize_live(opts: Options, progress: ProgressCB | None = None,
         it = PlanItem(src=p)
         plan.items.append(it)
         if progress:
-            progress(i, total, f"מחפש פנים ({found} נמצאו): {p.name}")
+            progress(i, total, f"התאמות: {found}   מחפש פנים: {p.name}")
         try:
             it.size = p.stat().st_size
             it.date = resolve_date(p, use_filename=opts.use_filename_dates)
