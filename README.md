@@ -6,7 +6,7 @@ scanning**, **offline AI person / face search**, and **one-click GitHub Release 
 
 Full Unicode / Hebrew path support, deterministic naming, collision-safe, and one-click Undo.
 
-![Media Organizer – face search & organization preview](docs/screenshot-preview.png)
+![Media Organizer – face search & organization preview](docs/screenshot-v2.png)
 
 ## ⚡ Quick Install
 
