@@ -1,0 +1,93 @@
+name: Build & Release (Windows / macOS / Linux)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pytest -q
+          pwsh -NoProfile -File build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            dist/MediaOrganizer.exe
+            dist/MediaOrganizer-cli.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pytest -q
+          python tools/make_icon.py
+          pyinstaller --noconfirm --clean --windowed --add-data "assets:assets" --collect-data customtkinter --collect-all pillow_heif --icon assets/icon.ico --name MediaOrganizer run_gui.py
+          pyinstaller --noconfirm --clean --onefile --console --add-data "assets:assets" --collect-data customtkinter --collect-all pillow_heif --name MediaOrganizer-cli run_cli.py
+          cd dist
+          zip -r MediaOrganizer-macos.zip MediaOrganizer.app MediaOrganizer-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-binaries
+          path: dist/MediaOrganizer-macos.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pytest -q
+          python tools/make_icon.py
+          pyinstaller --noconfirm --clean --onefile --noconsole --add-data "assets:assets" --collect-data customtkinter --collect-all pillow_heif --name MediaOrganizer run_gui.py
+          pyinstaller --noconfirm --clean --onefile --console --add-data "assets:assets" --collect-data customtkinter --collect-all pillow_heif --name MediaOrganizer-cli run_cli.py
+          cd dist
+          tar -czf MediaOrganizer-linux.tar.gz MediaOrganizer MediaOrganizer-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: dist/MediaOrganizer-linux.tar.gz
+
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/*/* --clobber
+          else
+            gh release create "$TAG" artifacts/*/* --title "Media Organizer $TAG" --generate-notes
+          fi

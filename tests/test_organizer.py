@@ -211,3 +211,34 @@ def test_face_filter_with_mock_matcher(heb, tmp_path, monkeypatch):
     st = {it.src.name: it.status for it in plan.items}
     assert st == {"match_1.jpg": "planned", "other_1.jpg": NO_FACE_MATCH}
 
+
+def test_updater_version_comparison_and_mock(monkeypatch):
+    import io
+    import json
+    from media_organizer import updater
+
+    assert updater.parse_version("v1.2.0") > updater.parse_version("1.1.0")
+    assert updater.parse_version("v1.2.0") == updater.parse_version("1.2.0")
+
+    payload = json.dumps({
+        "tag_name": "v99.0.0",
+        "body": "Big update",
+        "html_url": "https://github.com/dor2500/media-organizer/releases/tag/v99.0.0",
+        "assets": [
+            {"name": "MediaOrganizer.exe", "browser_download_url": "https://example.com/win.exe"},
+            {"name": "MediaOrganizer-macos.zip", "browser_download_url": "https://example.com/mac.zip"},
+            {"name": "MediaOrganizer-linux.tar.gz", "browser_download_url": "https://example.com/lin.tar.gz"},
+        ],
+    }).encode("utf-8")
+
+    class FakeResp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda req, timeout=10: FakeResp(payload))
+    info = updater.check_for_updates()
+    assert info.is_newer is True
+    assert info.tag == "v99.0.0"
+    assert info.asset_name is not None
+
+

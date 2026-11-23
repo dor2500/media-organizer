@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import os
 import queue
+import subprocess
 import sys
 import threading
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -16,6 +18,7 @@ from .core import (DONE, DUPLICATE, ERROR, NO_FACE_MATCH, OUT_OF_RANGE, PLANNED,
                    Options, Plan, build_plan, execute, latest_undo, summarize, summary_text,
                    undo, write_reports)
 from .dates import SRC_FILENAME, SRC_FILESYSTEM, SRC_METADATA
+from .updater import check_for_updates, download_and_apply
 
 BG = "#16181d"
 PANEL = "#1f222a"
@@ -121,6 +124,8 @@ class App(ctk.CTk):
 
     # ------------------------------------------------------------------ layout
     def _set_icon(self):
+        if sys.platform != "win32":
+            return
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
         ico = base / "assets" / "icon.ico"
         if ico.exists():
@@ -135,8 +140,12 @@ class App(ctk.CTk):
         head.pack(fill="x", padx=22, pady=(14, 4))
         ctk.CTkLabel(head, text="📷  מסדר תמונות וסרטונים", text_color=FG,
                      font=ctk.CTkFont(size=25, weight="bold")).pack(side="left")
-        ctk.CTkLabel(head, text=f"{APP_NAME}  •  שנה / חודש / יום.חודש  •  חיפוש לפי פנים",
+        ctk.CTkLabel(head, text=f"{APP_NAME} v{__version__}  •  שנה / חודש / יום.חודש  •  חיפוש לפי פנים",
                      text_color=MUTED, font=ctk.CTkFont(size=13)).pack(side="left", padx=16, pady=(6, 0))
+        self.btn_update = ctk.CTkButton(head, text="🔄  בדוק עדכונים", width=150, height=34,
+                                        fg_color=GREY, hover_color=GREY_H,
+                                        command=self.on_check_updates)
+        self.btn_update.pack(side="right")
 
         # ---- step card
         card = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=14)
@@ -158,13 +167,17 @@ class App(ctk.CTk):
                       command=self._pick_src).grid(row=1, column=2, padx=(4, 18))
 
         # Output row
-        ctk.CTkLabel(card, text="②  לאן לשמור (נקבע אוטומטית - אפשר לשנות)", text_color=MUTED,
-                     anchor="w").grid(row=2, column=0, columnspan=3, sticky="ew", padx=18, pady=(10, 2))
+        ctk.CTkLabel(card, text="②  בחר תיקיית יעד — שם הכל יישמר וייסודר (נקבע אוטומטית, אפשר לשנות)",
+                     text_color=MUTED, anchor="w").grid(
+            row=2, column=0, columnspan=3, sticky="ew", padx=18, pady=(10, 2))
         self.out_var = ctk.StringVar()
-        self.out_entry = ctk.CTkEntry(card, textvariable=self.out_var, height=36)
-        self.out_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=(18, 4))
+        self.out_entry = ctk.CTkEntry(card, textvariable=self.out_var, height=38,
+                                      placeholder_text="הדבק או בחר תיקייה שבה יישמרו כל הקבצים המסודרים…")
+        self.out_entry.grid(row=3, column=0, sticky="ew", padx=(18, 8))
         self.out_entry.bind("<Key>", lambda e: setattr(self, "_out_manual", True))
-        ctk.CTkButton(card, text="📁  בחר…", width=130, height=36, fg_color=GREY,
+        ctk.CTkButton(card, text="📋  הדבק יעד", width=110, height=38, fg_color=GREY,
+                      hover_color=GREY_H, command=self._paste_out).grid(row=3, column=1, padx=4)
+        ctk.CTkButton(card, text="📁  בחר יעד…", width=130, height=38, fg_color=GREY,
                       hover_color=GREY_H, command=self._pick_out).grid(row=3, column=2, padx=(4, 18))
 
         # Optional Person Face Filter row
@@ -347,6 +360,17 @@ class App(ctk.CTk):
             if p not in existing:
                 existing.append(p)
             self._set_sources_text("\n".join(existing))
+
+    def _paste_out(self):
+        try:
+            text = self.clipboard_get()
+        except Exception:
+            text = ""
+        p = clean_path(text)
+        if p:
+            self._set_out(p, manual=True)
+        else:
+            messagebox.showinfo(APP_NAME, "הלוח ריק - העתק קודם נתיב של תיקיית יעד.")
 
     def _pick_out(self):
         d = filedialog.askdirectory(title="בחר תיקיית יעד")
@@ -543,9 +567,56 @@ class App(ctk.CTk):
     def on_open(self):
         out = clean_path(self.out_var.get())
         if out and Path(out).exists():
-            os.startfile(out)  # type: ignore[attr-defined]
+            if sys.platform == "win32":
+                os.startfile(out)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", out])
+            else:
+                subprocess.Popen(["xdg-open", out])
         else:
             messagebox.showinfo(APP_NAME, "התיקייה המסודרת עדיין לא קיימת.")
+
+    def on_check_updates(self):
+        self.btn_update.configure(state="disabled", text="בודק עדכונים…")
+        self.status.configure(text="בודק עדכונים מול GitHub Releases…")
+
+        def finish(info, err):
+            self.btn_update.configure(state="normal", text="🔄  בדוק עדכונים")
+            if err:
+                self.status.configure(text="בדיקת עדכונים נכשלה.")
+                messagebox.showerror(APP_NAME, f"לא ניתן לבדוק עדכונים:\n{err}")
+                return
+            if not info.is_newer:
+                self.status.configure(text=f"התוכנה מעודכנת (v{__version__}).")
+                messagebox.showinfo(APP_NAME, f"התוכנה מעודכנת! ✅\n\nגרסה מותקנת: v{__version__}")
+                return
+            notes = (info.notes[:400] + "…") if len(info.notes) > 400 else info.notes
+            msg = f"גרסה חדשה זמינה: {info.tag} (מותקן: v{__version__})\n"
+            if notes:
+                msg += f"\n{notes}\n"
+            if info.asset_url and getattr(sys, "frozen", False):
+                msg += f"\nלהוריד ולהתקין את {info.asset_name} עכשיו?"
+                if messagebox.askyesno(APP_NAME, msg):
+                    self._apply_update(info)
+            else:
+                msg += "\nלפתוח את עמוד ההורדה ב-GitHub?"
+                if messagebox.askyesno(APP_NAME, msg):
+                    webbrowser.open(info.html_url)
+
+        self._thread(check_for_updates, finish)
+
+    def _apply_update(self, info):
+        def finish(res, err):
+            self._set_busy(False)
+            if err:
+                messagebox.showerror(APP_NAME, f"הורדת העדכון נכשלה:\n{err}")
+                return
+            if res == "restarting":
+                self.destroy()
+            else:
+                messagebox.showinfo(APP_NAME, f"העדכון הורד אל:\n{res}")
+
+        self._thread(lambda: download_and_apply(info, self._progress), finish)
 
     def on_undo(self):
         out = clean_path(self.out_var.get())
