@@ -85,10 +85,12 @@ def hebrew_summary(plan: Plan, executed: bool) -> str:
         f"  📷 מטא-דאטה (EXIF/וידאו): {src.get(SRC_METADATA, 0)}",
         f"  🏷️ מתוך שם הקובץ: {src.get(SRC_FILENAME, 0)}",
         f"  🕒 תאריך הקובץ במחשב: {src.get(SRC_FILESYSTEM, 0)}",
-        "",
-        "─" * 34,
-        summary_text(plan),
     ]
+    if s["years"]:
+        lines += ["", "📅 תמונות לפי שנה:"]
+        for y, cnt in sorted(s["years"].items(), reverse=True):
+            lines.append(f"  {y}:  {cnt}")
+    lines += ["", "─" * 34, summary_text(plan)]
     return "\n".join(lines)
 
 
