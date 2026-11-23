@@ -126,7 +126,8 @@ def _natural(s: str) -> tuple:
                  for t in re.split(r"(\d+)", s.casefold()) if t)
 
 
-def scan(opts: Options) -> tuple[list[Path], list[Path]]:
+def scan(opts: Options, progress: ProgressCB | None = None,
+         cancel: threading.Event | None = None) -> tuple[list[Path], list[Path]]:
     out = Path(opts.output)
     media, ignored = [], []
     seen: set[Path] = set()
@@ -135,7 +136,11 @@ def scan(opts: Options) -> tuple[list[Path], list[Path]]:
         skip_out = out.exists() and _is_within(out, src) and out.resolve() != src.resolve()
         walker = os.walk(src) if opts.recursive else [(str(src), [], os.listdir(src))]
         for root, dirs, files in walker:
+            if cancel and cancel.is_set():
+                return media, ignored
             rp = Path(root)
+            if progress:
+                progress(0, 0, f"סורק: {rp.name or rp}  (נמצאו {len(media)} קבצי מדיה)")
             # never descend into our own log folder or into the output folder
             dirs[:] = sorted(
                 d for d in dirs
@@ -161,10 +166,10 @@ def build_plan(opts: Options, progress: ProgressCB | None = None,
         from .faces import FaceMatcher
 
         if progress:
-            progress(0, 1, f"Loading face model & reference: {opts.person_image.name}")
+            progress(0, 0, f"טוען מודל זיהוי פנים ותמונת ייחוס: {opts.person_image.name}")
         matcher = FaceMatcher(opts.person_image, threshold=opts.face_threshold)
 
-    media, ignored = scan(opts)
+    media, ignored = scan(opts, progress=progress, cancel=cancel)
     plan = Plan(opts, ignored=ignored)
     total = len(media)
 

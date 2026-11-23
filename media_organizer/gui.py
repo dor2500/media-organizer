@@ -472,8 +472,11 @@ class App(ctk.CTk):
                 ev = self.q.get_nowait()
                 if ev[0] == "progress":
                     _, i, n, msg = ev
-                    self.progress.set(i / max(n, 1))
-                    self.status.configure(text=f"{msg}   ({i}/{n})")
+                    if n > 0:
+                        self.progress.set(i / n)
+                        self.status.configure(text=f"{msg}   ({i}/{n})")
+                    else:
+                        self.status.configure(text=msg)
                 elif ev[0] == "done":
                     ev[1]()
         except queue.Empty:
